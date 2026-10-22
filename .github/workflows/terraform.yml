@@ -1,0 +1,119 @@
+
+name: Terraform AWS Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  plan:
+    name: Terraform Format, Validate and Plan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Terraform Format
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: tfplan
+          retention-days: 5
+
+  apply:
+    name: Approve and Apply Terraform
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Download Approved Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan
+          path: .
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Terraform Outputs
+        run: terraform output
+
+      - name: Validate EC2 and Web Server
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+        run: |
+          terraform output -raw ec2_instance_id
+          terraform output -raw elastic_ip
+          terraform output -raw s3_bucket_name
+          URL=$(terraform output -raw application_url)
+          echo "Application URL: $URL"
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              --connect-timeout 5 "$URL" -o /tmp/index.html; then
+              cat /tmp/index.html
+              exit 0
+            fi
+            echo "Web server not ready; attempt $attempt/30"
+            sleep 10
+          done
+          echo "Web server validation failed"
+          exit 1
+
+      - name: Validate S3 Bucket
+        run: |
+          BUCKET=$(terraform output -raw s3_bucket_name)
+          aws s3api get-bucket-versioning --bucket "$BUCKET"
+          aws s3api get-public-access-block --bucket "$BUCKET"
+          aws s3api get-bucket-encryption --bucket "$BUCKET"
