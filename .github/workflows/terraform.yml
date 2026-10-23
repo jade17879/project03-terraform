@@ -28,6 +28,27 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
+      - name: Debug GitHub OIDC Claims
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
+        run: |
+          set -e
+          TOKEN=$(curl -fsS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["value"])')
+
+          printf '%s' "$TOKEN" | python3 -c '
+          import sys, json, base64
+          token = sys.stdin.read().strip()
+          payload = token.split(".")[1]
+          payload += "=" * ((4 - len(payload) % 4) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          keys = ["iss", "aud", "sub", "repository", "repository_id",
+                  "repository_owner_id", "ref", "environment"]
+          print(json.dumps({k: claims.get(k) for k in keys}, indent=2))
+          '
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
