@@ -49,6 +49,28 @@ jobs:
                   "repository_owner_id", "ref", "environment"]
           print(json.dumps({k: claims.get(k) for k in keys}, indent=2))
           '
+
+      - name: Debug Apply OIDC Claims
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOKEN=$(curl -fsS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["value"])')
+
+          export TOKEN
+          python3 - <<'PY'
+          import os, json, base64
+          token = os.environ["TOKEN"]
+          payload = token.split(".")[1]
+          payload += "=" * ((4 - len(payload) % 4) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          for key in ("iss", "aud", "sub", "repository_id",
+                      "repository_owner_id", "ref", "environment"):
+              print(f"{key}: {claims.get(key)}")
+          PY
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
